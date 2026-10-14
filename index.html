@@ -1,0 +1,935 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Make It to Mona</title>
+<style>
+  :root {
+    --bg: #15120f;
+    --panel: rgba(20, 16, 12, 0.82);
+    --ink: #f3ead8;
+    --muted: #b9ab90;
+    --gold: #e0b44c;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--ink);
+    font-family: Georgia, "Times New Roman", serif; }
+  canvas { display: block; }
+  #hud {
+    position: fixed; top: 16px; left: 16px; padding: 12px 16px; background: var(--panel);
+    border: 1px solid rgba(224, 180, 76, 0.35); border-radius: 6px; pointer-events: none; max-width: 300px;
+  }
+  #hud h1 { margin: 0 0 4px; font-size: 20px; font-weight: normal; letter-spacing: 0.04em; color: var(--gold); }
+  #hud p { margin: 2px 0; font-size: 13px; color: var(--muted); line-height: 1.4; }
+  #timer { font-variant-numeric: tabular-nums; font-size: 18px; color: var(--ink); margin-top: 6px; }
+  #overlay {
+    position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    background: rgba(10, 8, 6, 0.55); padding: 16px;
+  }
+  #overlay.show { display: flex; }
+  #overlay .card {
+    background: var(--panel); border: 1px solid var(--gold); border-radius: 8px; padding: 28px 32px;
+    text-align: center; max-width: 420px;
+  }
+  #overlay h2 { margin: 0 0 8px; font-weight: normal; color: var(--gold); font-size: 28px; }
+  #overlay p { margin: 6px 0; color: var(--ink); }
+  #overlay .small { color: var(--muted); font-size: 13px; }
+</style>
+<script type="importmap">
+  { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+</head>
+<body>
+<div id="hud">
+  <h1>Make It to Mona</h1>
+  <p>Push through the crowd and touch the fence right in front of the Mona Lisa.</p>
+  <p>Arrow keys to move &middot; R to restart</p>
+  <div id="timer">0:00.0</div>
+  <p id="best"></p>
+</div>
+<div id="overlay">
+  <div class="card">
+    <h2>You made it!</h2>
+    <p id="winTime"></p>
+    <p class="small">She smiles at you. Probably.</p>
+    <p class="small">Press Enter to visit again</p>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+
+// =====================================================================
+//  CONFIGURATION  (tweak the game here)
+// =====================================================================
+const CONFIG = {
+  // --- Crowd -----------------------------------------------------------
+  CROWD_SIZE: 100,              // preferred number of visitors in the room at any time
+  NPC_SPEED: 1.0,               // average walking speed of visitors (meters / second)
+  NPC_SPEED_VARIATION: 0.25,    // random spread on NPC_SPEED (0.25 = +/- 25%)
+  NPC_ACCELERATION: 4,          // how quickly visitors reach their walking speed
+  NPC_WANDER: 0.7,              // how much visitors meander / change direction (radians)
+  WATCH_TIME_MIN: 10,           // seconds a visitor stands near the fence (min)
+  WATCH_TIME_MAX: 22,           // seconds a visitor stands near the fence (max)
+  CROWD_PRESSURE: 0.2,          // speed at which watchers shuffle towards the fence (m/s)
+  SPAWN_INTERVAL: 0.2,          // minimum seconds between two new visitors appearing
+
+  // --- Player ----------------------------------------------------------
+  PLAYER_SPEED: 1.5,            // your walking speed (meters / second)
+  PLAYER_ACCELERATION: 8,
+
+  // --- Soft collisions (higher mass = harder to push aside) -----------
+  MASS_PLAYER: 1,
+  MASS_WALKING: 2,
+  MASS_WATCHING: 3.5,
+  MASS_LEAVING: 4,
+  COLLISION_SOFTNESS: 0.5,      // fraction of an overlap resolved per iteration (0..1)
+  COLLISION_ITERATIONS: 3,
+  PERSON_RADIUS: 0.26,          // body radius of every human (meters)
+
+  // --- Room geometry (meters) -----------------------------------------
+  ROOM_WIDTH: 20,               // west-east
+  ROOM_DEPTH: 14,               // north-south
+  WALL_HEIGHT: 2.4,
+  NORTH_WALL_HEIGHT: 3.4,       // the wall the painting hangs on
+  CUTAWAY_WALL_HEIGHT: 0.5,     // south-side walls are cut low so they don't hide the floor
+  WALL_THICKNESS: 0.4,
+  ENTRANCE_WIDTH: 3,
+  ENTRANCE_Z: 3,                // entrance offset from the room center (+ = towards south)
+  CORRIDOR_LENGTH: 3,
+  FENCE_RADIUS: 3,
+  WIN_ANGLE: 30,                // degrees either side of dead center that count as "in front"
+
+  // --- View -------------------------------------------------------------
+  CAMERA_TILT: 22,              // degrees from straight down, so the painting is visible
+};
+
+// =====================================================================
+//  Derived geometry
+// =====================================================================
+const HW = CONFIG.ROOM_WIDTH / 2;
+const HD = CONFIG.ROOM_DEPTH / 2;
+const T = CONFIG.WALL_THICKNESS;
+const CL = CONFIG.CORRIDOR_LENGTH;
+const EZ = CONFIG.ENTRANCE_Z;
+const EZ0 = EZ - CONFIG.ENTRANCE_WIDTH / 2;
+const EZ1 = EZ + CONFIG.ENTRANCE_WIDTH / 2;
+const R = CONFIG.FENCE_RADIUS;
+const PR = CONFIG.PERSON_RADIUS;
+const FENCE = { x: 0, z: -HD };        // center of the half circle, on the north wall
+const WIN_ANGLE = THREE.MathUtils.degToRad(CONFIG.WIN_ANGLE);
+const STEP = 1 / 60;
+
+// Axis-aligned wall boxes in the xz plane. playerOnly boxes close the corridor
+// ends for you, while visitors walk through them into the dark.
+const WALLS = [
+  { x0: -HW - T, x1: HW + T, z0: -HD - T, z1: -HD, h: CONFIG.NORTH_WALL_HEIGHT }, // north
+  { x0: -HW - T, x1: HW + T, z0: HD, z1: HD + T, h: CONFIG.CUTAWAY_WALL_HEIGHT },  // south
+  { x0: -HW - T, x1: -HW, z0: -HD - T, z1: EZ0 },             // west, north part
+  { x0: -HW - T, x1: -HW, z0: EZ1, z1: HD + T },              // west, south part
+  { x0: HW, x1: HW + T, z0: -HD - T, z1: EZ0 },               // east, north part
+  { x0: HW, x1: HW + T, z0: EZ1, z1: HD + T },                // east, south part
+  { x0: -HW - CL - 2, x1: -HW - T, z0: EZ0 - T, z1: EZ0 },    // west corridor walls
+  { x0: -HW - CL - 2, x1: -HW - T, z0: EZ1, z1: EZ1 + T, h: CONFIG.CUTAWAY_WALL_HEIGHT },
+  { x0: HW + T, x1: HW + CL + 2, z0: EZ0 - T, z1: EZ0 },      // east corridor walls
+  { x0: HW + T, x1: HW + CL + 2, z0: EZ1, z1: EZ1 + T, h: CONFIG.CUTAWAY_WALL_HEIGHT },
+  { x0: -HW - CL - T, x1: -HW - CL, z0: EZ0, z1: EZ1, playerOnly: true, invisible: true },
+  { x0: HW + CL, x1: HW + CL + T, z0: EZ0, z1: EZ1, playerOnly: true, invisible: true },
+];
+
+// =====================================================================
+//  Renderer, scene, camera
+// =====================================================================
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const BG = 0x15120f;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(BG);
+
+// Orthographic, slightly tilted towards the north wall so the painting is visible
+const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 200);
+
+function fitCamera() {
+  const w = window.innerWidth, h = window.innerHeight;
+  renderer.setSize(w, h);
+  const tilt = THREE.MathUtils.degToRad(CONFIG.CAMERA_TILT);
+  const spanX = CONFIG.ROOM_WIDTH + 2 * CL + 1.2;
+  // Floor depth is foreshortened by the tilt; the tall north wall adds a bit on top
+  const spanY = (CONFIG.ROOM_DEPTH + 2 * T + 0.6) * Math.cos(tilt) + CONFIG.NORTH_WALL_HEIGHT * Math.sin(tilt);
+  const halfH = Math.max(spanY / 2, (spanX / 2) / (w / h));
+  Object.assign(camera, { left: -halfH * w / h, right: halfH * w / h, top: halfH, bottom: -halfH });
+  const centerY = CONFIG.NORTH_WALL_HEIGHT * Math.sin(tilt) / 2;
+  const lookZ = -centerY / Math.cos(tilt);
+  camera.position.set(0, 60 * Math.cos(tilt), lookZ + 60 * Math.sin(tilt));
+  camera.lookAt(0, 0, lookZ);
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', fitCamera);
+fitCamera();
+
+scene.add(new THREE.HemisphereLight(0xfff4e0, 0x3a3026, 1.1));
+const sun = new THREE.DirectionalLight(0xfff1dc, 1.6);
+sun.position.set(-6, 22, 8);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -HW - CL - 2, right: HW + CL + 2, top: HD + 3, bottom: -HD - 3, near: 1, far: 60 });
+sun.shadow.camera.updateProjectionMatrix();
+sun.shadow.bias = -0.0005;
+scene.add(sun);
+
+// =====================================================================
+//  Procedural textures
+// =====================================================================
+function canvas(w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  return [c, c.getContext('2d')];
+}
+
+function makeParquetTexture() {
+  const [c, g] = canvas(512, 512);
+  const cells = 8, s = 512 / cells, planks = 3, pw = s / planks;
+  for (let i = 0; i < cells; i++) {
+    for (let j = 0; j < cells; j++) {
+      for (let k = 0; k < planks; k++) {
+        const l = 30 + Math.random() * 10, hue = 28 + Math.random() * 8;
+        g.fillStyle = `hsl(${hue}, 45%, ${l}%)`;
+        const horizontal = (i + j) % 2 === 0;
+        const x = i * s + (horizontal ? 0 : k * pw), y = j * s + (horizontal ? k * pw : 0);
+        const w = horizontal ? s : pw, h = horizontal ? pw : s;
+        g.fillRect(x, y, w, h);
+        g.strokeStyle = 'rgba(0,0,0,0.08)';
+        for (let n = 0; n < 4; n++) {           // wood grain
+          g.beginPath();
+          const o = 3 + Math.random() * (pw - 6);
+          if (horizontal) { g.moveTo(x, y + o); g.lineTo(x + w, y + o + (Math.random() - 0.5) * 3); }
+          else { g.moveTo(x + o, y); g.lineTo(x + o + (Math.random() - 0.5) * 3, y + h); }
+          g.stroke();
+        }
+        g.strokeStyle = 'rgba(20,10,0,0.45)';
+        g.lineWidth = 1.2;
+        g.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+        g.lineWidth = 1;
+      }
+    }
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.anisotropy = 8;
+  return tex;
+}
+
+function makeMonaLisaTexture() {
+  const [c, g] = canvas(256, 384);
+  // Sky and hazy landscape
+  let grd = g.createLinearGradient(0, 0, 0, 384);
+  grd.addColorStop(0, '#9fb093'); grd.addColorStop(0.3, '#7e8f6c');
+  grd.addColorStop(0.55, '#626042'); grd.addColorStop(1, '#2c2717');
+  g.fillStyle = grd; g.fillRect(0, 0, 256, 384);
+  g.fillStyle = 'rgba(110,135,120,0.7)';
+  g.beginPath(); g.moveTo(0, 120); g.quadraticCurveTo(40, 70, 80, 110); g.quadraticCurveTo(110, 140, 128, 150);
+  g.lineTo(0, 170); g.fill();
+  g.beginPath(); g.moveTo(256, 100); g.quadraticCurveTo(210, 60, 180, 120); g.lineTo(256, 160); g.fill();
+  g.strokeStyle = 'rgba(170,140,90,0.8)'; g.lineWidth = 4;   // winding road
+  g.beginPath(); g.moveTo(10, 230); g.bezierCurveTo(40, 200, 20, 180, 60, 165); g.stroke();
+  g.strokeStyle = 'rgba(150,170,160,0.6)'; g.lineWidth = 3;  // river
+  g.beginPath(); g.moveTo(250, 220); g.bezierCurveTo(220, 190, 240, 175, 200, 160); g.stroke();
+  // Hair and veil
+  g.fillStyle = '#1d150c';
+  g.beginPath(); g.ellipse(128, 132, 56, 82, 0, 0, Math.PI * 2); g.fill();
+  // Dress
+  g.fillStyle = '#2b2214';
+  g.beginPath(); g.moveTo(20, 384); g.bezierCurveTo(30, 260, 70, 225, 128, 215);
+  g.bezierCurveTo(186, 225, 226, 260, 236, 384); g.fill();
+  // Chest
+  g.fillStyle = '#c49a5f';
+  g.beginPath(); g.moveTo(104, 172); g.lineTo(152, 172); g.lineTo(176, 240);
+  g.quadraticCurveTo(128, 262, 80, 240); g.closePath(); g.fill();
+  // Face
+  grd = g.createRadialGradient(122, 112, 6, 128, 125, 48);
+  grd.addColorStop(0, '#e2bd7c'); grd.addColorStop(1, '#a87d45');
+  g.fillStyle = grd;
+  g.beginPath(); g.ellipse(128, 125, 33, 46, 0, 0, Math.PI * 2); g.fill();
+  // Eyes, nose, the smile
+  g.fillStyle = '#3a2814';
+  g.beginPath(); g.ellipse(115, 118, 6, 2.5, 0, 0, Math.PI * 2); g.fill();
+  g.beginPath(); g.ellipse(141, 118, 6, 2.5, 0, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = 'rgba(80,50,25,0.6)'; g.lineWidth = 1.5;
+  g.beginPath(); g.moveTo(128, 122); g.lineTo(126, 138); g.lineTo(131, 140); g.stroke();
+  g.strokeStyle = '#5a3a1e'; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(115, 151); g.quadraticCurveTo(128, 156, 142, 149); g.stroke();
+  // Folded hands
+  g.fillStyle = '#c59c62';
+  g.beginPath(); g.ellipse(120, 330, 40, 16, -0.15, 0, Math.PI * 2); g.fill();
+  g.beginPath(); g.ellipse(146, 322, 30, 13, 0.2, 0, Math.PI * 2); g.fill();
+  // Old varnish and vignette
+  g.fillStyle = 'rgba(160,120,30,0.18)'; g.fillRect(0, 0, 256, 384);
+  grd = g.createRadialGradient(128, 170, 60, 128, 192, 230);
+  grd.addColorStop(0, 'rgba(0,0,0,0)'); grd.addColorStop(1, 'rgba(0,0,0,0.55)');
+  g.fillStyle = grd; g.fillRect(0, 0, 256, 384);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+function makeDarknessTexture() {
+  const [c, g] = canvas(256, 4);
+  const grd = g.createLinearGradient(0, 0, 256, 0);
+  grd.addColorStop(0, 'rgba(21,18,15,0)');
+  grd.addColorStop(0.43, 'rgba(21,18,15,0.97)');
+  grd.addColorStop(1, 'rgba(21,18,15,1)');
+  g.fillStyle = grd; g.fillRect(0, 0, 256, 4);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+function makeLabelTexture(text) {
+  const [c, g] = canvas(256, 96);
+  g.font = 'bold 64px Georgia, serif';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.lineWidth = 10; g.strokeStyle = 'rgba(0,0,0,0.85)';
+  g.strokeText(text, 128, 50);
+  g.fillStyle = '#ffd84a'; g.fillText(text, 128, 50);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+// =====================================================================
+//  Room
+// =====================================================================
+const floorMat = new THREE.MeshStandardMaterial({ map: makeParquetTexture(), roughness: 0.75 });
+function addFloor(x0, x1, z0, z1) {
+  const geo = new THREE.PlaneGeometry(x1 - x0, z1 - z0);
+  geo.rotateX(-Math.PI / 2);
+  geo.translate((x0 + x1) / 2, 0, (z0 + z1) / 2);
+  // UVs from world coordinates so the parquet lines up across pieces (one tile = 4.8m)
+  const pos = geo.attributes.position, uv = geo.attributes.uv;
+  for (let i = 0; i < pos.count; i++) uv.setXY(i, pos.getX(i) / 4.8, -pos.getZ(i) / 4.8);
+  const m = new THREE.Mesh(geo, floorMat);
+  m.receiveShadow = true;
+  scene.add(m);
+}
+addFloor(-HW, HW, -HD, HD);                            // the room
+addFloor(-HW - CL - 3, -HW, EZ0, EZ1);                 // west corridor
+addFloor(HW, HW + CL + 3, EZ0, EZ1);                   // east corridor
+
+const wallSide = new THREE.MeshStandardMaterial({ color: 0x2c3a4e, roughness: 0.9 });
+const wallTop = new THREE.MeshStandardMaterial({ color: 0x55647a, roughness: 0.9 });
+const wallMats = [wallSide, wallSide, wallTop, wallSide, wallSide, wallSide];
+for (const w of WALLS) {
+  if (w.invisible) continue;
+  const h = w.h ?? CONFIG.WALL_HEIGHT;
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w.x1 - w.x0, h, w.z1 - w.z0), wallMats);
+  m.position.set((w.x0 + w.x1) / 2, h / 2, (w.z0 + w.z1) / 2);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  scene.add(m);
+}
+
+// Visitors appear from (and vanish into) the darkness at the corridor ends
+const darkTex = makeDarknessTexture();
+for (const side of [-1, 1]) {
+  const len = 4.6, y = CONFIG.WALL_HEIGHT + 0.05;
+  const m = new THREE.Mesh(
+    new THREE.PlaneGeometry(len, CONFIG.ENTRANCE_WIDTH + 2 * T + 3),
+    new THREE.MeshBasicMaterial({ map: darkTex, transparent: true, depthWrite: false })
+  );
+  m.rotation.x = -Math.PI / 2;
+  if (side < 0) m.rotation.z = Math.PI;
+  // Shifted south a little to compensate for the tilted view of a plane this high up
+  m.position.set(side * (HW + CL - 1.6 + len / 2), y, EZ + y * Math.tan(THREE.MathUtils.degToRad(CONFIG.CAMERA_TILT)) * 0.6);
+  m.renderOrder = 10;
+  scene.add(m);
+}
+
+// The Mona Lisa (a little larger than life, so you can see her from up here)
+const paintW = 1.6, paintH = 2.4;
+const frame = new THREE.Mesh(
+  new THREE.BoxGeometry(paintW + 0.3, paintH + 0.3, 0.12),
+  new THREE.MeshStandardMaterial({ color: 0xb08a3c, metalness: 0.6, roughness: 0.35 })
+);
+frame.position.set(0, 1.75, -HD + 0.06);
+scene.add(frame);
+const painting = new THREE.Mesh(
+  new THREE.PlaneGeometry(paintW, paintH),
+  new THREE.MeshStandardMaterial({ map: makeMonaLisaTexture(), roughness: 0.6, emissive: 0x221a10 })
+);
+painting.position.set(0, 1.75, -HD + 0.125);
+scene.add(painting);
+const glass = new THREE.Mesh(
+  new THREE.BoxGeometry(paintW + 0.7, paintH + 0.6, 0.35),
+  new THREE.MeshStandardMaterial({ color: 0xcfe8ff, transparent: true, opacity: 0.12, roughness: 0.05 })
+);
+glass.position.set(0, 1.75, -HD + 0.18);
+scene.add(glass);
+const paintLight = new THREE.SpotLight(0xffe2b0, 30, 12, 0.5, 0.6);
+paintLight.position.set(0, 4, -HD + 3);
+paintLight.target = painting;
+scene.add(paintLight);
+
+// Floor inside the fence and the golden "touch here" zone in front
+const inside = new THREE.Mesh(
+  new THREE.CircleGeometry(R, 48, Math.PI, Math.PI),
+  new THREE.MeshStandardMaterial({ color: 0x3b2a1c, roughness: 0.9 })
+);
+inside.rotation.x = -Math.PI / 2;
+inside.position.set(FENCE.x, 0.005, FENCE.z);
+inside.receiveShadow = true;
+scene.add(inside);
+
+const winZone = new THREE.Mesh(
+  new THREE.RingGeometry(R, R + 0.45, 32, 1, -Math.PI / 2 - WIN_ANGLE, 2 * WIN_ANGLE),
+  new THREE.MeshBasicMaterial({ color: 0xffcf4a, transparent: true, opacity: 0.35, depthWrite: false })
+);
+winZone.rotation.x = -Math.PI / 2;
+winZone.position.set(FENCE.x, 0.01, FENCE.z);
+scene.add(winZone);
+
+// The half circle fence: brass posts and a wooden rail, starting from the wall
+const brass = new THREE.MeshStandardMaterial({ color: 0xc9a24a, metalness: 0.7, roughness: 0.3 });
+const rail = new THREE.Mesh(
+  new THREE.TorusGeometry(R, 0.06, 8, 64, Math.PI),
+  new THREE.MeshStandardMaterial({ color: 0x5a3418, roughness: 0.5 })
+);
+rail.rotation.x = Math.PI / 2;
+rail.position.set(FENCE.x, 0.95, FENCE.z);
+rail.castShadow = true;
+scene.add(rail);
+const postGeo = new THREE.CylinderGeometry(0.05, 0.07, 0.95, 10);
+for (let i = 0; i <= 12; i++) {
+  const a = -Math.PI / 2 + (i / 12) * Math.PI;
+  const post = new THREE.Mesh(postGeo, brass);
+  post.position.set(FENCE.x + Math.sin(a) * R, 0.475, FENCE.z + Math.cos(a) * R);
+  post.castShadow = true;
+  scene.add(post);
+}
+
+// =====================================================================
+//  Humans
+// =====================================================================
+const SHIRTS = [0xc0392b, 0x2e86c1, 0x27ae60, 0x8e44ad, 0xd35400, 0x16a085, 0x7f8c8d, 0xecf0f1,
+  0x34495e, 0xe84393, 0x6c5ce7, 0x00b894, 0xfdcb6e, 0xa0522d, 0x95a5a6, 0x2d3436, 0xff7675, 0x74b9ff];
+const HAIR = [0x1b1209, 0x2e1d10, 0x5b3a1e, 0x8a6a3b, 0xd8c08a, 0x6b6b6b, 0xb5502a];
+const SKIN = [0xf1c9a5, 0xe0ac7e, 0xc68863, 0x8d5a3b, 0x5c3a24];
+const BAGS = [0x222222, 0x3d5a80, 0x7b2d26, 0x4a5d23];
+const matCache = new Map();
+function mat(color, opts = {}) {
+  const key = color + JSON.stringify(opts);
+  if (!matCache.has(key)) matCache.set(key, new THREE.MeshStandardMaterial({ color, roughness: 0.8, ...opts }));
+  return matCache.get(key);
+}
+const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+const bodyGeo = new THREE.CapsuleGeometry(0.16, 0.95, 4, 12);
+const headGeo = new THREE.SphereGeometry(0.11, 14, 10);
+const hairGeo = new THREE.SphereGeometry(0.115, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.55);
+const bagGeo = new THREE.BoxGeometry(0.3, 0.36, 0.14);
+const phoneGeo = new THREE.BoxGeometry(0.08, 0.14, 0.015);
+const phoneMat = new THREE.MeshStandardMaterial({ color: 0x111111, emissive: 0x8fd3ff, emissiveIntensity: 0.6 });
+
+function buildHumanMesh(shirt, { bag = false, hair = pick(HAIR) } = {}) {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(bodyGeo, mat(shirt));
+  body.scale.set(PR / 0.16, 1, 1);
+  body.position.y = 0.8;
+  body.castShadow = true;
+  g.add(body);
+  const head = new THREE.Mesh(headGeo, mat(pick(SKIN)));
+  head.position.y = 1.6;
+  head.castShadow = true;
+  g.add(head);
+  const hairM = new THREE.Mesh(hairGeo, mat(hair));
+  hairM.position.set(0, 1.62, -0.015);
+  g.add(hairM);
+  if (bag) {
+    const b = new THREE.Mesh(bagGeo, mat(pick(BAGS)));
+    b.position.set(0, 1.1, -0.2);
+    b.castShadow = true;
+    g.add(b);
+  }
+  const phone = new THREE.Mesh(phoneGeo, phoneMat);
+  phone.position.set(0, 1.62, 0.3);
+  phone.rotation.x = -0.25;
+  phone.visible = false;
+  g.add(phone);
+  g.userData = { body, head, phone };
+  return g;
+}
+
+const S = { ENTER: 0, APPROACH: 1, WATCH: 2, LEAVE: 3, EXIT: 4 };
+const MASS = {
+  [S.ENTER]: CONFIG.MASS_WALKING, [S.APPROACH]: CONFIG.MASS_WALKING, [S.WATCH]: CONFIG.MASS_WATCHING,
+  [S.LEAVE]: CONFIG.MASS_LEAVING, [S.EXIT]: CONFIG.MASS_LEAVING,
+};
+const rand = (a, b) => a + Math.random() * (b - a);
+const gauss = () => (Math.random() + Math.random() + Math.random() - 1.5) / 0.5; // approx N(0,1)
+const clamp = THREE.MathUtils.clamp;
+
+// Angle around the fence center: 0 = straight in front (south), +/- PI/2 = along the wall
+const fenceAngle = (x, z) => Math.atan2(x - FENCE.x, z - FENCE.z);
+const fencePoint = (angle, dist) => ({ x: FENCE.x + Math.sin(angle) * dist, z: FENCE.z + Math.cos(angle) * dist });
+
+function sampleWatchSpot() {
+  // Strongly biased towards the front: that is where everyone wants their selfie
+  const a = clamp(gauss() * 0.6, -Math.PI / 2 + 0.15, Math.PI / 2 - 0.15);
+  const d = R + PR + 0.2 + Math.abs(gauss()) * 1.4;
+  return fencePoint(a, d);
+}
+
+let npcs = [];
+let player = null;
+
+function makePerson(x, z, isPlayer = false) {
+  return {
+    x, z, vx: 0, vz: 0, r: PR, isPlayer,
+    heading: Math.random() * Math.PI * 2, walkPhase: Math.random() * 10,
+    sepX: 0, sepZ: 0, prevX: x, prevZ: z, actualSpeed: 0, blocked: 0,
+  };
+}
+
+function laneFor(side, entering) {
+  const m = rand(0.2, 0.8);           // keep to the right-hand side of the doorway
+  return entering ? -side * m : side * m;
+}
+
+function makeNpc(x, z, state, side = Math.random() < 0.5 ? -1 : 1) {
+  const n = makePerson(x, z);
+  n.speed = CONFIG.NPC_SPEED * (1 + (Math.random() * 2 - 1) * CONFIG.NPC_SPEED_VARIATION);
+  n.side = side;
+  n.lane = laneFor(side, state === S.ENTER);
+  n.spot = sampleWatchSpot();
+  n.wander = 0; n.wanderTarget = 0; n.wanderTimer = rand(1, 4);
+  n.detour = null; n.detourTime = 0;
+  n.phoneUser = Math.random() < 0.75;
+  setState(n, state);
+  n.mesh = buildHumanMesh(pick(SHIRTS), { bag: Math.random() < 0.3 });
+  scene.add(n.mesh);
+  return n;
+}
+
+function setState(n, state) {
+  n.state = state;
+  n.mass = MASS[state];
+  n.blocked = 0;
+  if (state === S.WATCH) {
+    n.timer = rand(CONFIG.WATCH_TIME_MIN, CONFIG.WATCH_TIME_MAX);
+    n.anchor = { x: n.x, z: n.z };
+  } else if (state === S.LEAVE) {
+    n.side = Math.random() < 0.5 ? -1 : 1;
+    n.lane = laneFor(n.side, false);
+  }
+}
+
+function isFree(x, z, r) {
+  for (const n of npcs) if ((n.x - x) ** 2 + (n.z - z) ** 2 < (r + n.r) ** 2) return false;
+  if (player && (player.x - x) ** 2 + (player.z - z) ** 2 < (r + player.r) ** 2) return false;
+  return true;
+}
+
+let spawnCooldown = 0;
+function trySpawn() {
+  const sides = Math.random() < 0.5 ? [-1, 1] : [1, -1];
+  for (const side of sides) {
+    const lane = laneFor(side, true);
+    const x = side * (HW + CL + 0.6), z = EZ + lane;
+    if (isFree(x, z, PR + 0.05)) {
+      const n = makeNpc(x, z, S.ENTER, side);
+      n.lane = lane;
+      n.heading = side > 0 ? -Math.PI / 2 : Math.PI / 2;
+      npcs.push(n);
+      spawnCooldown = CONFIG.SPAWN_INTERVAL;
+      return;
+    }
+  }
+}
+
+function removeNpc(n) {
+  scene.remove(n.mesh);
+}
+
+// =====================================================================
+//  Steering
+// =====================================================================
+function routeAroundFence(n, tx, tz) {
+  // If the straight line to the target clips the fence, aim for a waypoint along its arc instead
+  const dx = tx - n.x, dz = tz - n.z, len2 = dx * dx + dz * dz;
+  if (len2 < 1e-6) return { x: tx, z: tz };
+  const t = clamp(((FENCE.x - n.x) * dx + (FENCE.z - n.z) * dz) / len2, 0, 1);
+  if (t > 0.98) return { x: tx, z: tz };
+  const qx = n.x + dx * t, qz = n.z + dz * t;
+  const rf = R + n.r + 0.15;
+  if ((qx - FENCE.x) ** 2 + (qz - FENCE.z) ** 2 >= rf * rf) return { x: tx, z: tz };
+  const a = fenceAngle(n.x, n.z), at = fenceAngle(tx, tz);
+  return fencePoint(a + clamp(at - a, -0.7, 0.7), rf + 0.5);
+}
+
+function steerTo(n, tx, tz, speed, arrive = 0.8) {
+  const dx = tx - n.x, dz = tz - n.z;
+  const d = Math.hypot(dx, dz);
+  if (d < 1e-4) return { x: 0, z: 0, d };
+  const s = speed * Math.min(1, d / arrive);
+  return { x: (dx / d) * s, z: (dz / d) * s, d };
+}
+
+function computeSeparation() {
+  const all = player ? [...npcs, player] : npcs;
+  for (const e of all) { e.sepX = 0; e.sepZ = 0; }
+  for (let i = 0; i < all.length; i++) {
+    const a = all[i];
+    for (let j = i + 1; j < all.length; j++) {
+      const b = all[j];
+      const range = a.r + b.r + 0.35;
+      const dx = a.x - b.x, dz = a.z - b.z, d2 = dx * dx + dz * dz;
+      if (d2 >= range * range || d2 < 1e-8) continue;
+      const d = Math.sqrt(d2), f = (range - d) / range;
+      // Visitors barely care about you: they avoid each other more than they avoid the player
+      const wa = b.isPlayer ? 0.3 : 1, wb = a.isPlayer ? 0.3 : 1;
+      a.sepX += (dx / d) * f * wa; a.sepZ += (dz / d) * f * wa;
+      b.sepX -= (dx / d) * f * wb; b.sepZ -= (dz / d) * f * wb;
+    }
+  }
+}
+
+function updateNpc(n, dt) {
+  // Occasional changes of mind: the walking direction drifts around the goal
+  n.wanderTimer -= dt;
+  if (n.wanderTimer <= 0) {
+    n.wanderTimer = rand(1.5, 5);
+    n.wanderTarget = (Math.random() * 2 - 1) * CONFIG.NPC_WANDER;
+  }
+  n.wander += (n.wanderTarget - n.wander) * Math.min(1, dt * 1.5);
+
+  let target = null, speed = n.speed, wanderScale = 1;
+  switch (n.state) {
+    case S.ENTER:
+      target = { x: n.side * (HW - 1.0), z: EZ + n.lane };
+      wanderScale = 0.2;
+      if (n.side * n.x < HW - 0.5) setState(n, S.APPROACH);
+      break;
+    case S.APPROACH: {
+      target = routeAroundFence(n, n.spot.x, n.spot.z);
+      const dSpot = Math.hypot(n.spot.x - n.x, n.spot.z - n.z);
+      const dFence = Math.hypot(n.x - FENCE.x, n.z - FENCE.z) - R;
+      wanderScale = clamp(dSpot / 3, 0, 1);
+      // Reached the spot, or stuck in the crowd close enough to see her: start watching
+      if (dSpot < 0.4 || (dFence < 4 && n.blocked > 1.0)) setState(n, S.WATCH);
+      break;
+    }
+    case S.WATCH:
+      n.timer -= dt;
+      if (n.timer <= 0) { setState(n, S.LEAVE); target = { x: n.x, z: n.z }; }
+      break;
+    case S.LEAVE: {
+      const door = { x: n.side * (HW - 0.8), z: EZ + n.lane };
+      target = routeAroundFence(n, door.x, door.z);
+      if (n.side * n.x > HW - 1.4 && Math.abs(n.z - EZ) < CONFIG.ENTRANCE_WIDTH / 2) setState(n, S.EXIT);
+      break;
+    }
+    case S.EXIT:
+      target = { x: n.side * (HW + CL + 3), z: EZ + n.lane };
+      wanderScale = 0.1;
+      break;
+  }
+
+  let dx = 0, dz = 0;
+  if (n.state === S.WATCH) {
+    // Hold your ground, but drift with the crowd; everyone inches towards the fence
+    n.anchor.x += (n.x - n.anchor.x) * Math.min(1, dt * 0.5);
+    n.anchor.z += (n.z - n.anchor.z) * Math.min(1, dt * 0.5);
+    const back = steerTo(n, n.anchor.x, n.anchor.z, 0.4, 0.5);
+    dx = back.x; dz = back.z;
+    const fx = n.x - FENCE.x, fz = n.z - FENCE.z, fd = Math.hypot(fx, fz);
+    if (fd > R + n.r + 0.12) { dx -= (fx / fd) * CONFIG.CROWD_PRESSURE; dz -= (fz / fd) * CONFIG.CROWD_PRESSURE; }
+  } else {
+    // Stuck for a while: try a little sidestep
+    if (n.detourTime > 0) {
+      n.detourTime -= dt;
+      target = n.detour;
+    } else if (n.blocked > 3.5 && n.state !== S.APPROACH) {
+      const a = Math.random() * Math.PI * 2;
+      n.detour = { x: n.x + Math.cos(a) * 1.2, z: n.z + Math.sin(a) * 1.2 };
+      n.detourTime = 1.2;
+      n.blocked = 0;
+    }
+    const s = steerTo(n, target.x, target.z, speed);
+    const w = n.wander * wanderScale, c = Math.cos(w), si = Math.sin(w);
+    dx = s.x * c - s.z * si;
+    dz = s.x * si + s.z * c;
+  }
+  dx += n.sepX * 0.9;
+  dz += n.sepZ * 0.9;
+
+  const k = Math.min(1, CONFIG.NPC_ACCELERATION * dt);
+  n.vx += (dx - n.vx) * k;
+  n.vz += (dz - n.vz) * k;
+}
+
+// =====================================================================
+//  Player input
+// =====================================================================
+const keys = new Set();
+window.addEventListener('keydown', (e) => {
+  if (e.key.startsWith('Arrow')) { keys.add(e.key); e.preventDefault(); if (!started && !won) startTimer(); }
+  if (e.key === 'r' || e.key === 'R') resetGame();
+  if (e.key === 'Enter' && won) resetGame();
+});
+window.addEventListener('keyup', (e) => keys.delete(e.key));
+window.addEventListener('blur', () => keys.clear());
+
+function updatePlayer(dt) {
+  let ix = 0, iz = 0;
+  if (!won) {
+    if (keys.has('ArrowLeft')) ix -= 1;
+    if (keys.has('ArrowRight')) ix += 1;
+    if (keys.has('ArrowUp')) iz -= 1;
+    if (keys.has('ArrowDown')) iz += 1;
+  }
+  const l = Math.hypot(ix, iz) || 1;
+  const k = Math.min(1, CONFIG.PLAYER_ACCELERATION * dt);
+  player.vx += ((ix / l) * CONFIG.PLAYER_SPEED - player.vx) * k;
+  player.vz += ((iz / l) * CONFIG.PLAYER_SPEED - player.vz) * k;
+}
+
+// =====================================================================
+//  Collisions
+// =====================================================================
+function resolvePairs(all) {
+  const soft = CONFIG.COLLISION_SOFTNESS;
+  for (let i = 0; i < all.length; i++) {
+    const a = all[i];
+    for (let j = i + 1; j < all.length; j++) {
+      const b = all[j];
+      const rr = a.r + b.r, dx = b.x - a.x, dz = b.z - a.z, d2 = dx * dx + dz * dz;
+      if (d2 >= rr * rr) continue;
+      let d = Math.sqrt(d2), nx, nz;
+      if (d < 1e-6) { const ang = Math.random() * Math.PI * 2; nx = Math.cos(ang); nz = Math.sin(ang); d = 0; }
+      else { nx = dx / d; nz = dz / d; }
+      const overlap = (rr - d) * soft;
+      const ia = 1 / a.mass, ib = 1 / b.mass, sum = ia + ib;
+      a.x -= nx * overlap * ia / sum; a.z -= nz * overlap * ia / sum;
+      b.x += nx * overlap * ib / sum; b.z += nz * overlap * ib / sum;
+    }
+  }
+}
+
+function resolveWalls(e) {
+  for (const w of WALLS) {
+    if (w.playerOnly && !e.isPlayer) continue;
+    const cx = clamp(e.x, w.x0, w.x1), cz = clamp(e.z, w.z0, w.z1);
+    const dx = e.x - cx, dz = e.z - cz, d2 = dx * dx + dz * dz;
+    if (d2 >= e.r * e.r) continue;
+    if (d2 > 1e-10) {
+      const d = Math.sqrt(d2), push = e.r - d;
+      e.x += (dx / d) * push; e.z += (dz / d) * push;
+    } else {
+      // Center ended up inside the box: leave along the shortest axis
+      const opts = [[w.x0 - e.r - e.x, 0], [w.x1 + e.r - e.x, 0], [0, w.z0 - e.r - e.z], [0, w.z1 + e.r - e.z]];
+      opts.sort((p, q) => Math.abs(p[0] + p[1]) - Math.abs(q[0] + q[1]));
+      e.x += opts[0][0]; e.z += opts[0][1];
+    }
+  }
+}
+
+function resolveFence(e) {
+  const dx = e.x - FENCE.x, dz = e.z - FENCE.z, min = R + e.r;
+  const d = Math.hypot(dx, dz);
+  if (d >= min) return;
+  if (d < 1e-6) { e.z = FENCE.z + min; return; }
+  e.x = FENCE.x + (dx / d) * min;
+  e.z = FENCE.z + (dz / d) * min;
+}
+
+// =====================================================================
+//  Simulation step
+// =====================================================================
+function step(dt) {
+  spawnCooldown -= dt;
+  if (npcs.length < CONFIG.CROWD_SIZE && spawnCooldown <= 0) trySpawn();
+
+  const all = [...npcs, player];
+  for (const e of all) { e.prevX = e.x; e.prevZ = e.z; }
+
+  updatePlayer(dt);
+  computeSeparation();
+  for (const n of npcs) updateNpc(n, dt);
+  for (const e of all) { e.x += e.vx * dt; e.z += e.vz * dt; }
+
+  for (let it = 0; it < CONFIG.COLLISION_ITERATIONS; it++) {
+    resolvePairs(all);
+    for (const e of all) { resolveWalls(e); resolveFence(e); }
+  }
+
+  for (const e of all) {
+    const moved = Math.hypot(e.x - e.prevX, e.z - e.prevZ) / dt;
+    e.actualSpeed += (moved - e.actualSpeed) * Math.min(1, dt * 6);
+    if (!e.isPlayer) {
+      if (e.state !== S.WATCH && e.actualSpeed < e.speed * 0.3) e.blocked += dt;
+      else e.blocked = Math.max(0, e.blocked - dt * 2);
+    }
+  }
+
+  // Visitors who left the room are gone for good
+  npcs = npcs.filter((n) => {
+    const gone = n.state === S.EXIT && n.side * n.x > HW + CL + 1.0;
+    if (gone) removeNpc(n);
+    return !gone;
+  });
+
+  if (!won) checkWin();
+}
+
+// =====================================================================
+//  Game state, win, HUD
+// =====================================================================
+const timerEl = document.getElementById('timer');
+const bestEl = document.getElementById('best');
+const overlay = document.getElementById('overlay');
+let started = false, won = false, startTime = 0, elapsed = 0;
+
+function readBest() { try { return parseFloat(localStorage.getItem('mona-best')) || null; } catch { return null; } }
+function writeBest(t) { try { localStorage.setItem('mona-best', String(t)); } catch { /* storage unavailable */ } }
+function fmt(t) {
+  const m = Math.floor(t / 60), s = t - m * 60;
+  return `${m}:${s.toFixed(1).padStart(4, '0')}`;
+}
+function showBest() { const b = readBest(); bestEl.textContent = b ? `Best: ${fmt(b)}` : ''; }
+
+function startTimer() { started = true; startTime = performance.now(); }
+
+function checkWin() {
+  const dx = player.x - FENCE.x, dz = player.z - FENCE.z;
+  const touching = Math.hypot(dx, dz) <= R + player.r + 0.06;
+  if (touching && Math.abs(Math.atan2(dx, dz)) <= WIN_ANGLE) {
+    won = true;
+    const best = readBest();
+    if (!best || elapsed < best) writeBest(elapsed);
+    document.getElementById('winTime').textContent =
+      `You reached the Mona Lisa in ${fmt(elapsed)}` + (!best || elapsed < best ? ' - a new best!' : '');
+    overlay.classList.add('show');
+    showBest();
+  }
+}
+
+// Player visuals: bright shirt, pulsing ring and a "YOU" label
+const playerRing = new THREE.Mesh(
+  new THREE.RingGeometry(0.36, 0.46, 40),
+  new THREE.MeshBasicMaterial({ color: 0xffd84a, transparent: true, opacity: 0.9, depthWrite: false })
+);
+playerRing.rotation.x = -Math.PI / 2;
+scene.add(playerRing);
+const youLabel = new THREE.Sprite(new THREE.SpriteMaterial({ map: makeLabelTexture('YOU'), depthTest: false }));
+youLabel.scale.set(1.3, 0.49, 1);
+youLabel.renderOrder = 20;
+scene.add(youLabel);
+
+// A guard keeps an eye on things from inside the fence (purely decorative)
+const guard = buildHumanMesh(0x111418, { hair: 0x1b1209 });
+guard.position.set(FENCE.x + R * 0.65, 0, FENCE.z + 0.9);
+scene.add(guard);
+
+function populate() {
+  for (const n of npcs) removeNpc(n);
+  npcs = [];
+  for (let i = 0; i < CONFIG.CROWD_SIZE; i++) {
+    const roll = Math.random();
+    const state = roll < 0.45 ? S.WATCH : roll < 0.8 ? S.APPROACH : S.LEAVE;
+    for (let tries = 0; tries < 40; tries++) {
+      let p;
+      if (state === S.WATCH) p = sampleWatchSpot();
+      else p = { x: rand(-HW + 0.6, HW - 0.6), z: rand(-HD + 0.6, HD - 0.6) };
+      if (Math.hypot(p.x - FENCE.x, p.z - FENCE.z) < R + PR + 0.1) continue;
+      if (!isFree(p.x, p.z, PR)) continue;
+      const n = makeNpc(p.x, p.z, state);
+      if (state === S.WATCH) n.timer = rand(0, CONFIG.WATCH_TIME_MAX);
+      npcs.push(n);
+      break;
+    }
+  }
+  // Let the crowd settle into a natural flow before you arrive
+  for (let i = 0; i < 240; i++) step(STEP);
+}
+
+function resetGame() {
+  won = false; started = false; elapsed = 0;
+  overlay.classList.remove('show');
+  keys.clear();
+  if (!player) {
+    player = makePerson(0, 0, true);
+    player.mass = CONFIG.MASS_PLAYER;
+    player.mesh = buildHumanMesh(0xffd400, { hair: 0x2e1d10 });
+    scene.add(player.mesh);
+  }
+  const side = Math.random() < 0.5 ? -1 : 1;
+  player.x = side * (HW + CL - 0.7); player.z = EZ;
+  player.vx = player.vz = 0;
+  player.heading = side < 0 ? Math.PI / 2 : -Math.PI / 2;
+  populate();
+  showBest();
+}
+
+// =====================================================================
+//  Rendering
+// =====================================================================
+function lerpAngle(a, b, t) {
+  let d = ((b - a + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+  return a + d * t;
+}
+
+function syncMesh(e, dt) {
+  const m = e.mesh, ud = m.userData;
+  m.position.set(e.x, 0, e.z);
+  const sp = Math.hypot(e.vx, e.vz);
+  let want = e.heading;
+  if (!e.isPlayer && e.state === S.WATCH) want = Math.atan2(FENCE.x - e.x, FENCE.z - e.z);
+  else if (sp > 0.15) want = Math.atan2(e.vx, e.vz);
+  e.heading = lerpAngle(e.heading, want, Math.min(1, dt * 6));
+  m.rotation.y = e.heading;
+  const walking = Math.min(1, e.actualSpeed / 0.8);
+  e.walkPhase += dt * (4 + e.actualSpeed * 6);
+  ud.body.rotation.y = Math.sin(e.walkPhase) * 0.18 * walking;
+  ud.head.position.y = 1.6 + Math.abs(Math.sin(e.walkPhase)) * 0.025 * walking;
+  if (!e.isPlayer) ud.phone.visible = e.phoneUser && e.state === S.WATCH;
+}
+
+let last = performance.now(), acc = 0;
+function animate(now) {
+  const dt = Math.min(0.1, (now - last) / 1000);
+  last = now;
+  acc += dt;
+  let n = 0;
+  while (acc >= STEP && n < 6) { step(STEP); acc -= STEP; n++; }
+  if (n === 6) acc = 0;
+
+  if (started && !won) elapsed = (now - startTime) / 1000;
+  timerEl.textContent = fmt(elapsed);
+
+  for (const e of npcs) syncMesh(e, dt);
+  syncMesh(player, dt);
+  const pulse = 1 + Math.sin(now / 220) * 0.08;
+  playerRing.position.set(player.x, 0.02, player.z);
+  playerRing.scale.setScalar(pulse);
+  youLabel.position.set(player.x, 2.5, player.z);
+  youLabel.material.opacity = started ? clamp(1 - (elapsed - 3) / 1.5, 0.35, 1) : 1;
+  winZone.material.opacity = won ? 0.75 : 0.25 + Math.sin(now / 400) * 0.1;
+  paintLight.intensity = won ? 60 : 30;
+
+  renderer.render(scene, camera);
+  requestAnimationFrame(animate);
+}
+
+resetGame();
+requestAnimationFrame(animate);
+
+// Small hook for automated testing / tinkering in the console
+window.__mona = { CONFIG, get npcs() { return npcs; }, get player() { return player; }, get won() { return won; }, step };
+</script>
+</body>
+</html>
