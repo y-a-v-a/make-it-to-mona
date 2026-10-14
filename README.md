@@ -1,1 +1,42 @@
-# make-it-to-mona
+# Make It to Mona
+
+A small browser game: you are a visitor in the crowded room where the Mona Lisa
+hangs. Push your way through the crowd and touch the fence right in front of the
+painting.
+
+The whole game is a single `index.html` (HTML, CSS and JavaScript), rendered with
+[Three.js](https://threejs.org/) loaded from a CDN.
+
+## Play
+
+Open `index.html` in a browser (an internet connection is needed to load Three.js).
+
+- Arrow keys: move
+- R: restart
+- Enter: play again after winning
+
+## Tweaking
+
+All tunable values live in the `CONFIG` object at the top of the script in
+`index.html`, for example:
+
+- `CROWD_SIZE`: preferred number of visitors in the room
+- `NPC_SPEED`, `NPC_SPEED_VARIATION`: how fast visitors walk
+- `PLAYER_SPEED`: how fast you walk
+- `MASS_*`: how hard people are to push aside
+- `WATCH_TIME_MIN`, `WATCH_TIME_MAX`: how long visitors stand at the fence
+
+## Tests
+
+The tests load the game in headless Chromium through Playwright, with a seeded
+random generator and Three.js served from `node_modules`, so they run offline.
+
+```sh
+npm install
+npx playwright install chromium   # once, if Playwright has no browser yet
+npm test
+```
+
+## License
+
+[MIT](LICENSE)
