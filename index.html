@@ -929,7 +929,10 @@ resetGame();
 requestAnimationFrame(animate);
 
 // Small hook for automated testing / tinkering in the console
-window.__mona = { CONFIG, get npcs() { return npcs; }, get player() { return player; }, get won() { return won; }, step };
+window.__mona = {
+  CONFIG, STATES: S, step, reset: resetGame,
+  get npcs() { return npcs; }, get player() { return player; }, get won() { return won; },
+};
 </script>
 </body>
 </html>

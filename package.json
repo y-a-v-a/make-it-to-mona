@@ -1,0 +1,15 @@
+{
+  "name": "make-it-to-mona",
+  "version": "1.0.0",
+  "description": "Push through the museum crowd and touch the fence in front of the Mona Lisa.",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "devDependencies": {
+    "playwright": "1.56.1",
+    "three": "0.160.0"
+  }
+}
