@@ -9,7 +9,8 @@ The whole game is a single `index.html` (HTML, CSS and JavaScript), rendered wit
 
 ## Play
 
-Open `index.html` in a browser (an internet connection is needed to load Three.js).
+Play online at <https://y-a-v-a.github.io/make-it-to-mona/>, or open `index.html` in a
+browser (an internet connection is needed to load Three.js).
 
 - Arrow keys: move
 - R: restart
@@ -36,6 +37,12 @@ npm install
 npx playwright install chromium   # once, if Playwright has no browser yet
 npm test
 ```
+
+## Deployment
+
+`.github/workflows/pages.yml` runs the tests on every push and pull request. On
+`main`, when the tests pass, it publishes `index.html` to GitHub Pages. This needs
+Pages to be set to deploy from GitHub Actions (Settings > Pages > Source).
 
 ## License
 
