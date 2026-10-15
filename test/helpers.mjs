@@ -40,7 +40,7 @@ export async function openGame(browser, { seed = 42 } = {}) {
 // Removes every visitor and stops new ones from spawning
 export function emptyRoom(page) {
   return page.evaluate(() => {
-    window.__mona.CONFIG.CROWD_SIZE = 0;
+    Object.assign(window.__mona.CONFIG, { CROWD_SIZE_START: 0, CROWD_SIZE_MAX: 0, CROWD_GROWTH_PER_MINUTE: 0 });
     window.__mona.npcs.length = 0;
   });
 }

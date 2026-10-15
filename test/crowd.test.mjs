@@ -6,19 +6,51 @@ let browser;
 before(async () => { browser = await launchBrowser(); });
 after(async () => { await browser?.close(); });
 
-test('the room stays full of visitors', async () => {
+test('the room stays as full as the current crowd target', async () => {
   const { page } = await openGame(browser);
-  const { C } = await geometry(page);
-  const counts = await page.evaluate(() => {
+  const samples = await page.evaluate(() => {
     const out = [];
     for (let s = 0; s < 90; s++) {
       for (let i = 0; i < 60; i++) window.__mona.step(1 / 60);
-      out.push(window.__mona.npcs.length);
+      out.push({ count: window.__mona.npcs.length, target: window.__mona.crowdTarget() });
     }
     return out;
   });
-  assert.ok(Math.max(...counts) <= C.CROWD_SIZE, `more visitors than CROWD_SIZE: ${Math.max(...counts)}`);
-  assert.ok(Math.min(...counts) >= C.CROWD_SIZE * 0.85, `the room emptied out to ${Math.min(...counts)}`);
+  for (const { count, target } of samples) {
+    assert.ok(count <= target, `${count} visitors while the target is ${target}`);
+    assert.ok(count >= target * 0.85, `only ${count} visitors while the target is ${target}`);
+  }
+  await page.close();
+});
+
+test('the room gets busier over time', async () => {
+  const { page } = await openGame(browser);
+  const { C } = await geometry(page);
+  const result = await page.evaluate(() => {
+    const g = window.__mona;
+    const start = g.npcs.length;
+    for (let i = 0; i < 60 * 180; i++) g.step(1 / 60);
+    return { start, later: g.npcs.length };
+  });
+  assert.ok(result.start <= C.CROWD_SIZE_START, `started with ${result.start} visitors`);
+  const expected = Math.min(C.CROWD_SIZE_MAX, C.CROWD_SIZE_START + 3 * C.CROWD_GROWTH_PER_MINUTE);
+  assert.ok(result.later >= expected * 0.85, `only ${result.later} visitors after 3 minutes, expected about ${expected}`);
+  await page.close();
+});
+
+test('the crowd never grows past its maximum', async () => {
+  const { page } = await openGame(browser);
+  const { C } = await geometry(page);
+  const result = await page.evaluate(() => {
+    const g = window.__mona;
+    g.CONFIG.CROWD_GROWTH_PER_MINUTE = 1000;
+    let most = 0;
+    for (let i = 0; i < 60 * 40; i++) { g.step(1 / 60); most = Math.max(most, g.npcs.length); }
+    return { most, target: g.crowdTarget() };
+  });
+  assert.equal(result.target, C.CROWD_SIZE_MAX);
+  assert.ok(result.most <= C.CROWD_SIZE_MAX, `${result.most} visitors, maximum is ${C.CROWD_SIZE_MAX}`);
+  assert.ok(result.most >= C.CROWD_SIZE_MAX * 0.85, `the room only reached ${result.most} visitors`);
   await page.close();
 });
 

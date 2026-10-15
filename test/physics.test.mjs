@@ -53,7 +53,7 @@ test('visitors are heavier than the player when they bump into each other', asyn
   const { page } = await openGame(browser);
   const moved = await page.evaluate(() => {
     const { npcs, player, step, CONFIG } = window.__mona;
-    CONFIG.CROWD_SIZE = 0;
+    Object.assign(CONFIG, { CROWD_SIZE_START: 0, CROWD_SIZE_MAX: 0, CROWD_GROWTH_PER_MINUTE: 0 });
     const n = npcs[0];
     npcs.length = 0;
     npcs.push(n);

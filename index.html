@@ -46,6 +46,7 @@
   <p>Push through the crowd and touch the fence right in front of the Mona Lisa.</p>
   <p>Arrow keys to move &middot; R to restart</p>
   <div id="timer">0:00.0</div>
+  <p id="crowd"></p>
   <p id="best"></p>
 </div>
 <div id="overlay">
@@ -65,7 +66,9 @@ import * as THREE from 'three';
 // =====================================================================
 const CONFIG = {
   // --- Crowd -----------------------------------------------------------
-  CROWD_SIZE: 100,              // preferred number of visitors in the room at any time
+  CROWD_SIZE_START: 70,         // visitors in the room when you arrive
+  CROWD_SIZE_MAX: 150,          // the room never gets busier than this
+  CROWD_GROWTH_PER_MINUTE: 20,  // extra visitors the room fills up with every minute
   NPC_SPEED: 1.0,               // average walking speed of visitors (meters / second)
   NPC_SPEED_VARIATION: 0.25,    // random spread on NPC_SPEED (0.25 = +/- 25%)
   NPC_ACCELERATION: 4,          // how quickly visitors reach their walking speed
@@ -535,6 +538,13 @@ function isFree(x, z, r) {
 }
 
 let spawnCooldown = 0;
+let roomTime = 0;   // seconds since this visit started; the room gets busier as it grows
+
+// The preferred number of visitors right now: it slowly rises over time
+function crowdTarget() {
+  const grown = CONFIG.CROWD_SIZE_START + CONFIG.CROWD_GROWTH_PER_MINUTE * (Math.max(0, roomTime) / 60);
+  return Math.floor(Math.min(CONFIG.CROWD_SIZE_MAX, grown));
+}
 function trySpawn() {
   const sides = Math.random() < 0.5 ? [-1, 1] : [1, -1];
   for (const side of sides) {
@@ -751,8 +761,9 @@ function resolveFence(e) {
 //  Simulation step
 // =====================================================================
 function step(dt) {
+  roomTime += dt;
   spawnCooldown -= dt;
-  if (npcs.length < CONFIG.CROWD_SIZE && spawnCooldown <= 0) trySpawn();
+  if (npcs.length < crowdTarget() && spawnCooldown <= 0) trySpawn();
 
   const all = [...npcs, player];
   for (const e of all) { e.prevX = e.x; e.prevZ = e.z; }
@@ -791,6 +802,7 @@ function step(dt) {
 // =====================================================================
 const timerEl = document.getElementById('timer');
 const bestEl = document.getElementById('best');
+const crowdEl = document.getElementById('crowd');
 const overlay = document.getElementById('overlay');
 let started = false, won = false, startTime = 0, elapsed = 0;
 
@@ -838,7 +850,9 @@ scene.add(guard);
 function populate() {
   for (const n of npcs) removeNpc(n);
   npcs = [];
-  for (let i = 0; i < CONFIG.CROWD_SIZE; i++) {
+  const warmupSteps = 240;
+  roomTime = -warmupSteps * STEP;    // the room's clock starts when you arrive, after the warm-up
+  for (let i = 0; i < crowdTarget(); i++) {
     const roll = Math.random();
     const state = roll < 0.45 ? S.WATCH : roll < 0.8 ? S.APPROACH : S.LEAVE;
     for (let tries = 0; tries < 40; tries++) {
@@ -854,7 +868,7 @@ function populate() {
     }
   }
   // Let the crowd settle into a natural flow before you arrive
-  for (let i = 0; i < 240; i++) step(STEP);
+  for (let i = 0; i < warmupSteps; i++) step(STEP);
 }
 
 function resetGame() {
@@ -910,6 +924,8 @@ function animate(now) {
 
   if (started && !won) elapsed = (now - startTime) / 1000;
   timerEl.textContent = fmt(elapsed);
+  const crowdText = `Visitors: ${npcs.length}`;
+  if (crowdEl.textContent !== crowdText) crowdEl.textContent = crowdText;
 
   for (const e of npcs) syncMesh(e, dt);
   syncMesh(player, dt);
@@ -930,7 +946,7 @@ requestAnimationFrame(animate);
 
 // Small hook for automated testing / tinkering in the console
 window.__mona = {
-  CONFIG, STATES: S, step, reset: resetGame,
+  CONFIG, STATES: S, step, reset: resetGame, crowdTarget,
   get npcs() { return npcs; }, get player() { return player; }, get won() { return won; },
 };
 </script>

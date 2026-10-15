@@ -21,7 +21,8 @@ browser (an internet connection is needed to load Three.js).
 All tunable values live in the `CONFIG` object at the top of the script in
 `index.html`, for example:
 
-- `CROWD_SIZE`: preferred number of visitors in the room
+- `CROWD_SIZE_START`, `CROWD_SIZE_MAX`: visitors in the room when you arrive, and the most it will hold
+- `CROWD_GROWTH_PER_MINUTE`: how quickly the room gets busier over time
 - `NPC_SPEED`, `NPC_SPEED_VARIATION`: how fast visitors walk
 - `PLAYER_SPEED`: how fast you walk
 - `MASS_*`: how hard people are to push aside

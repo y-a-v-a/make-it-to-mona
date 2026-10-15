@@ -19,7 +19,7 @@ test('the game loads without errors and renders a canvas', async () => {
 test('the configuration constants are exposed', async () => {
   const { page } = await openGame(browser);
   const { C } = await geometry(page);
-  for (const key of ['CROWD_SIZE', 'NPC_SPEED', 'PLAYER_SPEED']) {
+  for (const key of ['CROWD_SIZE_START', 'CROWD_SIZE_MAX', 'CROWD_GROWTH_PER_MINUTE', 'NPC_SPEED', 'PLAYER_SPEED']) {
     assert.equal(typeof C[key], 'number', key);
     assert.ok(C[key] > 0, key);
   }
@@ -74,15 +74,15 @@ test('the player cannot move after winning', async () => {
 test('R restarts the game with a full room', async () => {
   const { page } = await openGame(browser);
   const { C, R, fence } = await geometry(page);
-  const crowd = C.CROWD_SIZE;
+  const crowd = { CROWD_SIZE_START: C.CROWD_SIZE_START, CROWD_SIZE_MAX: C.CROWD_SIZE_MAX };
   await emptyRoom(page);
   await placePlayer(page, 0, fence.z + R + 1.5);
   await walk(page, 'ArrowUp', 2);
-  await page.evaluate((n) => { window.__mona.CONFIG.CROWD_SIZE = n; }, crowd);
+  await page.evaluate((c) => { Object.assign(window.__mona.CONFIG, c); }, crowd);
   await page.keyboard.press('r');
   const state = await page.evaluate(() => ({ won: window.__mona.won, npcs: window.__mona.npcs.length }));
   assert.equal(state.won, false);
-  assert.ok(state.npcs >= crowd * 0.9, `only ${state.npcs} visitors after restart`);
+  assert.ok(state.npcs >= crowd.CROWD_SIZE_START * 0.9, `only ${state.npcs} visitors after restart`);
   assert.doesNotMatch(await page.getAttribute('#overlay', 'class') ?? '', /show/);
   await page.close();
 });
