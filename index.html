@@ -35,6 +35,22 @@
   #overlay h2 { margin: 0 0 8px; font-weight: normal; color: var(--gold); font-size: 28px; }
   #overlay p { margin: 6px 0; color: var(--ink); }
   #overlay .small { color: var(--muted); font-size: 13px; }
+  [hidden] { display: none !important; }
+  #nameForm { margin: 16px 0 4px; }
+  #nameForm label { display: block; color: var(--ink); font-size: 14px; margin-bottom: 8px; }
+  #nameInput {
+    width: 150px; padding: 6px 4px 6px 12px; font: 28px/1 "Courier New", monospace; letter-spacing: 0.3em;
+    text-transform: uppercase; text-align: center; color: var(--gold); background: rgba(0, 0, 0, 0.35);
+    border: 1px solid var(--gold); border-radius: 4px; outline: none;
+  }
+  #leaderboard {
+    list-style: none; margin: 14px auto 6px; padding: 0; width: 210px; counter-reset: rank;
+    font: 15px/1.6 "Courier New", monospace; text-align: left;
+  }
+  #leaderboard li { display: flex; gap: 10px; padding: 0 6px; border-radius: 3px; counter-increment: rank; }
+  #leaderboard li::before { content: counter(rank) "."; width: 3ch; text-align: right; color: var(--muted); }
+  #leaderboard .name { flex: 1; letter-spacing: 0.2em; }
+  #leaderboard li.you { background: rgba(224, 180, 76, 0.25); color: var(--gold); }
 </style>
 <script type="importmap">
   { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
@@ -53,8 +69,16 @@
   <div class="card">
     <h2>You made it!</h2>
     <p id="winTime"></p>
-    <p class="small">She smiles at you. Probably.</p>
-    <p class="small">Press Enter to visit again</p>
+    <form id="nameForm" hidden>
+      <label for="nameInput">A top 10 time! Leave your name:</label>
+      <input id="nameInput" maxlength="4" autocomplete="off" spellcheck="false" aria-describedby="nameHint">
+      <p class="small" id="nameHint">Up to 4 letters or digits &middot; Enter to save &middot; Esc to skip</p>
+    </form>
+    <ol id="leaderboard" aria-label="Leaderboard"></ol>
+    <div id="againHint">
+      <p class="small">She smiles at you. Probably.</p>
+      <p class="small">Press Enter to visit again</p>
+    </div>
   </div>
 </div>
 
@@ -103,6 +127,9 @@ const CONFIG = {
   CORRIDOR_LENGTH: 3,
   FENCE_RADIUS: 3,
   WIN_ANGLE: 30,                // degrees either side of dead center that count as "in front"
+
+  // --- Leaderboard ------------------------------------------------------
+  LEADERBOARD_SIZE: 10,         // how many times are kept (in this browser's localStorage)
 
   // --- View -------------------------------------------------------------
   CAMERA_TILT: 22,              // degrees from straight down, so the painting is visible
@@ -687,6 +714,8 @@ function updateNpc(n, dt) {
 // =====================================================================
 const keys = new Set();
 window.addEventListener('keydown', (e) => {
+  if (e.target === nameInput) return;          // typing a name, not playing
+  if (naming) { nameInput.focus(); return; }
   if (e.key.startsWith('Arrow')) { keys.add(e.key); e.preventDefault(); if (!started && !won) startTimer(); }
   if (e.key === 'r' || e.key === 'R') resetGame();
   if (e.key === 'Enter' && won) resetGame();
@@ -804,15 +833,78 @@ const timerEl = document.getElementById('timer');
 const bestEl = document.getElementById('best');
 const crowdEl = document.getElementById('crowd');
 const overlay = document.getElementById('overlay');
-let started = false, won = false, startTime = 0, elapsed = 0;
+const winTimeEl = document.getElementById('winTime');
+const nameForm = document.getElementById('nameForm');
+const nameInput = document.getElementById('nameInput');
+const leaderboardEl = document.getElementById('leaderboard');
+const againHint = document.getElementById('againHint');
+let started = false, won = false, naming = false, startTime = 0, elapsed = 0;
 
-function readBest() { try { return parseFloat(localStorage.getItem('mona-best')) || null; } catch { return null; } }
-function writeBest(t) { try { localStorage.setItem('mona-best', String(t)); } catch { /* storage unavailable */ } }
 function fmt(t) {
   const m = Math.floor(t / 60), s = t - m * 60;
   return `${m}:${s.toFixed(1).padStart(4, '0')}`;
 }
-function showBest() { const b = readBest(); bestEl.textContent = b ? `Best: ${fmt(b)}` : ''; }
+
+// --- Leaderboard: the fastest times, kept in localStorage --------------
+const LEADERBOARD_KEY = 'mona-leaderboard';
+const cleanName = (s) => s.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4);
+
+function readLeaderboard() {
+  try {
+    const list = JSON.parse(localStorage.getItem(LEADERBOARD_KEY) || '[]');
+    if (!Array.isArray(list)) return [];
+    return list
+      .filter((e) => e && typeof e.name === 'string' && Number.isFinite(e.time))
+      .sort((a, b) => a.time - b.time)
+      .slice(0, CONFIG.LEADERBOARD_SIZE);
+  } catch {
+    return [];   // storage unavailable or corrupt: play on without a leaderboard
+  }
+}
+
+function addScore(name, time) {
+  const entry = { name, time, date: new Date().toISOString() };
+  const list = [...readLeaderboard(), entry].sort((a, b) => a.time - b.time).slice(0, CONFIG.LEADERBOARD_SIZE);
+  try { localStorage.setItem(LEADERBOARD_KEY, JSON.stringify(list)); } catch { /* storage unavailable */ }
+  return entry;
+}
+
+function qualifies(time) {
+  const list = readLeaderboard();
+  return list.length < CONFIG.LEADERBOARD_SIZE || time < list[list.length - 1].time;
+}
+
+function renderLeaderboard(highlight = null) {
+  const list = readLeaderboard();
+  leaderboardEl.replaceChildren(...list.map((e) => {
+    const li = document.createElement('li');
+    if (highlight && e.date === highlight.date && e.time === highlight.time) li.className = 'you';
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = e.name;
+    const time = document.createElement('span');
+    time.textContent = fmt(e.time);
+    li.append(name, time);
+    return li;
+  }));
+  leaderboardEl.hidden = list.length === 0;
+  bestEl.textContent = list.length ? `Best: ${list[0].name} ${fmt(list[0].time)}` : '';
+}
+
+function finishNaming(save) {
+  if (!naming) return;
+  naming = false;
+  const name = cleanName(nameInput.value);
+  const entry = save && name ? addScore(name, elapsed) : null;
+  nameInput.blur();
+  nameForm.hidden = true;
+  againHint.hidden = false;
+  renderLeaderboard(entry);
+}
+
+nameInput.addEventListener('input', () => { nameInput.value = cleanName(nameInput.value); });
+nameInput.addEventListener('keydown', (e) => { if (e.key === 'Escape') finishNaming(false); });
+nameForm.addEventListener('submit', (e) => { e.preventDefault(); finishNaming(true); });
 
 function startTimer() { started = true; startTime = performance.now(); }
 
@@ -821,12 +913,16 @@ function checkWin() {
   const touching = Math.hypot(dx, dz) <= R + player.r + 0.06;
   if (touching && Math.abs(Math.atan2(dx, dz)) <= WIN_ANGLE) {
     won = true;
-    const best = readBest();
-    if (!best || elapsed < best) writeBest(elapsed);
-    document.getElementById('winTime').textContent =
-      `You reached the Mona Lisa in ${fmt(elapsed)}` + (!best || elapsed < best ? ' - a new best!' : '');
+    keys.clear();
+    const list = readLeaderboard();
+    const isBest = !list.length || elapsed < list[0].time;
+    winTimeEl.textContent = `You reached the Mona Lisa in ${fmt(elapsed)}` + (isBest ? ' - a new best!' : '');
+    naming = qualifies(elapsed);
+    nameForm.hidden = !naming;
+    againHint.hidden = naming;
+    renderLeaderboard();
     overlay.classList.add('show');
-    showBest();
+    if (naming) { nameInput.value = ''; nameInput.focus(); }
   }
 }
 
@@ -872,8 +968,10 @@ function populate() {
 }
 
 function resetGame() {
-  won = false; started = false; elapsed = 0;
+  won = false; started = false; naming = false; elapsed = 0;
   overlay.classList.remove('show');
+  nameForm.hidden = true;
+  nameInput.blur();
   keys.clear();
   if (!player) {
     player = makePerson(0, 0, true);
@@ -886,7 +984,7 @@ function resetGame() {
   player.vx = player.vz = 0;
   player.heading = side < 0 ? Math.PI / 2 : -Math.PI / 2;
   populate();
-  showBest();
+  renderLeaderboard();
 }
 
 // =====================================================================
@@ -922,7 +1020,8 @@ function animate(now) {
   while (acc >= STEP && n < 6) { step(STEP); acc -= STEP; n++; }
   if (n === 6) acc = 0;
 
-  if (started && !won) elapsed = (now - startTime) / 1000;
+  // rAF timestamps mark the start of the frame, which can be just before the key press that started the timer
+  if (started && !won) elapsed = Math.max(0, (now - startTime) / 1000);
   timerEl.textContent = fmt(elapsed);
   const crowdText = `Visitors: ${npcs.length}`;
   if (crowdEl.textContent !== crowdText) crowdEl.textContent = crowdText;
@@ -946,7 +1045,7 @@ requestAnimationFrame(animate);
 
 // Small hook for automated testing / tinkering in the console
 window.__mona = {
-  CONFIG, STATES: S, step, reset: resetGame, crowdTarget,
+  CONFIG, STATES: S, step, reset: resetGame, crowdTarget, leaderboard: readLeaderboard,
   get npcs() { return npcs; }, get player() { return player; }, get won() { return won; },
 };
 </script>

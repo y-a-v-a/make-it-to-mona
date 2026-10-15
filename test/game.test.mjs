@@ -79,6 +79,7 @@ test('R restarts the game with a full room', async () => {
   await placePlayer(page, 0, fence.z + R + 1.5);
   await walk(page, 'ArrowUp', 2);
   await page.evaluate((c) => { Object.assign(window.__mona.CONFIG, c); }, crowd);
+  await page.keyboard.press('Escape');   // skip the leaderboard name, where R would just be typed
   await page.keyboard.press('r');
   const state = await page.evaluate(() => ({ won: window.__mona.won, npcs: window.__mona.npcs.length }));
   assert.equal(state.won, false);

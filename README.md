@@ -16,6 +16,10 @@ browser (an internet connection is needed to load Three.js).
 - R: restart
 - Enter: play again after winning
 
+The room gets busier the longer you take. When your time makes the top 10, you can
+leave a name of up to 4 letters or digits. The leaderboard is stored in your
+browser's localStorage, so it is local to that browser.
+
 ## Tweaking
 
 All tunable values live in the `CONFIG` object at the top of the script in
@@ -27,6 +31,7 @@ All tunable values live in the `CONFIG` object at the top of the script in
 - `PLAYER_SPEED`: how fast you walk
 - `MASS_*`: how hard people are to push aside
 - `WATCH_TIME_MIN`, `WATCH_TIME_MAX`: how long visitors stand at the fence
+- `LEADERBOARD_SIZE`: how many times the leaderboard keeps
 
 ## Tests
 
