@@ -157,3 +157,27 @@ test('real touch events (not just mouse) drive the joystick', async () => {
   assert.ok(p.x > 1, `a touch drag to the right moved the player to x=${p.x}`);
   await page.close();
 });
+
+test('the room and HUD stay clear of the notch / Dynamic Island', async () => {
+  const { page } = await openGame(browser, PHONE);
+  const insets = { left: 59, right: 59, bottom: 21 };   // an iPhone held sideways
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets });
+  await page.evaluate(() => window.dispatchEvent(new Event('resize')));
+  const { HW, HD, C } = await geometry(page);
+  const corners = [
+    [-HW - C.CORRIDOR_LENGTH, C.ENTRANCE_Z], [HW + C.CORRIDOR_LENGTH, C.ENTRANCE_Z],   // corridor ends
+    [-HW, -HD], [HW, -HD], [-HW, HD], [HW, HD],                                        // room corners
+  ];
+  const width = PHONE.viewport.width, height = PHONE.viewport.height;
+  for (const [x, z] of corners) {
+    const p = await page.evaluate(([px, pz]) => window.__mona.toScreen(px, pz), [x, z]);
+    assert.ok(p.x >= insets.left - 1 && p.x <= width - insets.right + 1, `(${x}, ${z}) is drawn at x=${p.x}`);
+    assert.ok(p.y >= 0 && p.y <= height - insets.bottom + 1, `(${x}, ${z}) is drawn at y=${p.y}`);
+  }
+  const hud = await page.locator('#hud').boundingBox();
+  const restart = await page.locator('#restartBtn').boundingBox();
+  assert.ok(hud.x >= insets.left, `the HUD starts at x=${hud.x}, under the notch`);
+  assert.ok(restart.x + restart.width <= width - insets.right, 'the restart button is under the notch');
+  await page.close();
+});
