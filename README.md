@@ -5,7 +5,8 @@ hangs. Push your way through the crowd and touch the fence right in front of the
 painting.
 
 The whole game is a single `index.html` (HTML, CSS and JavaScript), rendered with
-[Three.js](https://threejs.org/) loaded from a CDN.
+[Three.js](https://threejs.org/) loaded from a CDN. `manifest.webmanifest` and
+`icons/` only serve adding the game to a phone's home screen.
 
 ## Play
 
@@ -19,6 +20,10 @@ browser (an internet connection is needed to load Three.js).
 On a touchscreen, drag the on-screen joystick to walk: a small push walks slowly,
 a full push at full speed. Use the button in the top-right corner to restart, and
 hold your phone sideways.
+
+To play full screen on an iPhone, tap Share, then Add to Home Screen, and start the
+game from its icon: it then opens without browser tabs or address bar. On Android
+and iPad there is also a full screen button next to the restart button.
 
 The room gets busier the longer you take. When your time makes the top 10, you can
 leave a name of up to 4 letters or digits. The leaderboard is stored in your

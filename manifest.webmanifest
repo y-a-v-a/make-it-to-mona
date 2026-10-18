@@ -1,0 +1,16 @@
+{
+  "name": "Make It to Mona",
+  "short_name": "Mona",
+  "description": "Push through the museum crowd and touch the fence in front of the Mona Lisa.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#15120f",
+  "theme_color": "#15120f",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
