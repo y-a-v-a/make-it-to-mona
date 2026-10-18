@@ -23,8 +23,9 @@ function seedRandom(seed) {
   };
 }
 
-export async function openGame(browser, { seed = 42 } = {}) {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+// Pass { hasTouch: true, isMobile: true, viewport } to emulate a phone
+export async function openGame(browser, { seed = 42, viewport = { width: 1280, height: 800 }, ...device } = {}) {
+  const page = await browser.newPage({ viewport, ...device });
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
